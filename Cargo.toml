@@ -1,0 +1,8 @@
+[package]
+name = "libcephfs-sys"
+version = "0.1.0"
+authors = ["Chris Holcombe <xfactor973@gmail.com>"]
+
+[dependencies]
+libc = "*"
+ceph-rust = {path="../ceph-rust"}
