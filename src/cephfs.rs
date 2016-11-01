@@ -2,8 +2,9 @@ extern crate ceph_rust;
 use self::ceph_rust::ceph::RadosError;
 use cephfs_sys::*;
 
-use libc::{dev_t, ERANGE, mode_t, statvfs, strerror, utimbuf};
-use std::ffi::CString;
+use libc::{c_void, c_char, dev_t, ERANGE, mode_t, statvfs, stat, strerror, utimbuf};
+use std::ffi::{CStr, CString};
+use std::mem;
 
 struct CephFSVersion {
     major: i32,
@@ -33,9 +34,11 @@ pub fn version() -> Result<CephFSVersion, RadosError> {
     }
 }
 
-pub fn create(cmount: &mut &mut ceph_mount_info, id: &str) -> Result<(), RadosError> {
+pub fn create(id: &str) -> Result<(), RadosError> {
+    let id = try!(CString::new(id));
     unsafe {
-        let ret_code = ceph_create(cmount, id);
+        let mut cmount: ceph_mount_info = mem::uninitialized();
+        let ret_code = ceph_create(cmount, id.as_ptr());
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
@@ -43,11 +46,9 @@ pub fn create(cmount: &mut &mut ceph_mount_info, id: &str) -> Result<(), RadosEr
     Ok(())
 }
 
-pub fn create_from_rados(cmount: &mut &mut ceph_mount_info,
-
-                         cluster: rados_t)
-                         -> Result<(), RadosError> {
+pub fn create_from_rados(cluster: rados_t) -> Result<(), RadosError> {
     unsafe {
+        let mut cmount: ceph_mount_info = mem::uninitialized();
         let ret_code = ceph_create_from_rados(cmount, cluster);
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
@@ -66,9 +67,10 @@ pub fn init(cmount: &mut ceph_mount_info) -> Result<(), RadosError> {
     Ok(())
 }
 
-pub fn mount(cmount: &mut ceph_mount_info, root: *const &str) -> Result<(), RadosError> {
+pub fn mount(cmount: &mut ceph_mount_info, root: &str) -> Result<(), RadosError> {
+    let root = try!(CString::new(root));
     unsafe {
-        let ret_code = ceph_mount(cmount, root);
+        let ret_code = ceph_mount(cmount, root.as_ptr());
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
@@ -77,33 +79,28 @@ pub fn mount(cmount: &mut ceph_mount_info, root: *const &str) -> Result<(), Rado
 }
 
 pub fn mds_command(cmount: &mut ceph_mount_info,
-
-                   mds_spec: *const &str,
-
-                   cmd: &mut *const &str,
-
+                   mds_spec: &str,
+                   cmd: &str,
                    cmdlen: usize,
-
-                   inbuf: *const &str,
-
+                   inbuf: &str,
                    inbuflen: usize,
-
-                   outbuf: &mut &mut &str,
-
+                   outbuf: &mut &str,
                    outbuflen: &mut usize,
-
-                   outs: &mut &mut &str,
-
+                   outs: &mut &str,
                    outslen: &mut usize)
                    -> Result<(), RadosError> {
+    let mds_spec = try!(CString::new(mds_spec));
+    let cmd = try!(CString::new(cmd));
+    let inbuf = try!(CString::new(inbuf));
+    let outbuf = try!(CString::new(outbuf));
     unsafe {
         let ret_code = ceph_mds_command(cmount,
-                                        mds_spec,
-                                        cmd,
+                                        mds_spec.as_ptr(),
+                                        &mut cmd.as_ptr(),
                                         cmdlen,
-                                        inbuf,
+                                        inbuf.as_ptr(),
                                         inbuflen,
-                                        outbuf,
+                                        outbuf.as_ptr(),
                                         outbuflen,
                                         outs,
                                         outslen);
@@ -134,14 +131,11 @@ pub fn release(cmount: &mut ceph_mount_info) -> Result<(), RadosError> {
     Ok(())
 }
 
-pub fn get_mount_context(cmount: &mut ceph_mount_info) -> Result<&mut CephContext, RadosError> {
+pub fn get_mount_context(cmount: &mut ceph_mount_info) -> Result<*mut CephContext, RadosError> {
     unsafe {
-        let ret_code = ceph_get_mount_context(cmount);
-        if ret_code < 0 {
-            return Err(RadosError::new(try!(get_error(ret_code))));
-        }
+        let context = ceph_get_mount_context(cmount);
+        Ok(context)
     }
-    Ok(())
 }
 
 pub fn is_mounted(cmount: &mut ceph_mount_info) -> Result<(), RadosError> {
@@ -203,21 +197,16 @@ pub fn conf_set(cmount: &mut ceph_mount_info, option: &str, value: &str) -> Resu
 }
 
 pub fn conf_get(cmount: &mut ceph_mount_info,
-
                 option: &str,
-
                 buf: &mut &str,
-
                 len: usize)
-                -> Result<(), RadosError> {
+                -> Result<String, RadosError> {
     let option = try!(CString::new(option));
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
     unsafe {
-        let ret_code = ceph_conf_get(cmount, option.as_ptr(), buf, len);
-        if ret_code < 0 {
-            return Err(RadosError::new(try!(get_error(ret_code))));
-        }
+        let ret_code = ceph_conf_get(cmount, option.as_ptr(), buf.as_ptr() as *mut i8, len);
+        Ok(String::from_utf8_lossy(&buf).into_owned())
     }
-    Ok(())
 }
 
 pub fn statfs(cmount: &mut ceph_mount_info,
@@ -244,14 +233,11 @@ pub fn sync_fs(cmount: &mut ceph_mount_info) -> Result<(), RadosError> {
     Ok(())
 }
 
-pub fn getcwd(cmount: &mut ceph_mount_info) -> Result<*const &str, RadosError> {
+pub fn getcwd(cmount: &mut ceph_mount_info) -> Result<String, RadosError> {
     unsafe {
-        let ret_code = ceph_getcwd(cmount);
-        if ret_code < 0 {
-            return Err(RadosError::new(try!(get_error(ret_code))));
-        }
+        let dir = ceph_getcwd(cmount);
+        Ok(CStr::from_ptr(dir).to_string_lossy().into_owned())
     }
-    Ok(())
 }
 
 pub fn chdir(cmount: &mut ceph_mount_info, path: &str) -> Result<(), RadosError> {
@@ -266,19 +252,17 @@ pub fn chdir(cmount: &mut ceph_mount_info, path: &str) -> Result<(), RadosError>
 }
 
 pub fn opendir(cmount: &mut ceph_mount_info,
-
-               name: &str,
-
-               dirpp: &mut &mut ceph_dir_result)
-               -> Result<(), RadosError> {
+               name: &str)
+               -> Result<*mut *mut ceph_dir_result, RadosError> {
     let name = try!(CString::new(name));
     unsafe {
-        let ret_code = ceph_opendir(cmount, name.as_ptr(), dirpp);
+        let mut dirpp: ceph_dir_result = mem::uninitialized();
+        let ret_code = ceph_opendir(cmount, name.as_ptr(), &mut dirpp);
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
+        Ok(())
     }
-    Ok(())
 }
 
 pub fn closedir(cmount: &mut ceph_mount_info,
@@ -298,12 +282,9 @@ pub fn readdir(cmount: &mut ceph_mount_info,
                dirp: &mut ceph_dir_result)
                -> Result<dirent, RadosError> {
     unsafe {
-        let ret_code = ceph_readdir(cmount, dirp);
-        if ret_code < 0 {
-            return Err(RadosError::new(try!(get_error(ret_code))));
-        }
+        let dirent = ceph_readdir(cmount, dirp);
+        Ok(dirent)
     }
-    Ok(())
 }
 
 pub fn readdir_r(cmount: &mut ceph_mount_info,
@@ -324,7 +305,7 @@ pub fn readdir_r(cmount: &mut ceph_mount_info,
 pub fn readdirplus_r(cmount: &mut ceph_mount_info,
                      dirp: &mut ceph_dir_result,
                      de: &mut dirent,
-                     st: &mut ::std::os::linux::raw::stat,
+                     st: &mut stat,
                      stmask: i32)
                      -> Result<(), RadosError> {
     unsafe {
@@ -337,11 +318,8 @@ pub fn readdirplus_r(cmount: &mut ceph_mount_info,
 }
 
 pub fn getdents(cmount: &mut ceph_mount_info,
-
                 dirp: &mut ceph_dir_result,
-
                 name: &mut &str,
-
                 buflen: i32)
                 -> Result<(), RadosError> {
     unsafe {
@@ -354,11 +332,8 @@ pub fn getdents(cmount: &mut ceph_mount_info,
 }
 
 pub fn getdnames(cmount: &mut ceph_mount_info,
-
                  dirp: &mut ceph_dir_result,
-
                  name: &mut &str,
-
                  buflen: i32)
                  -> Result<(), RadosError> {
     unsafe {
@@ -374,12 +349,9 @@ pub fn telldir(cmount: &mut ceph_mount_info,
                dirp: &mut ceph_dir_result)
                -> Result<i64, RadosError> {
     unsafe {
-        let ret_code = ceph_telldir(cmount, dirp);
-        if ret_code < 0 {
-            return Err(RadosError::new(try!(get_error(ret_code))));
-        }
+        let position = ceph_telldir(cmount, dirp);
+        Ok(position)
     }
-    Ok(())
 }
 
 pub fn mkdir(cmount: &mut ceph_mount_info, path: &str, mode: mode_t) -> Result<(), RadosError> {
@@ -472,12 +444,7 @@ pub fn rename(cmount: &mut ceph_mount_info, from: &str, to: &str) -> Result<(), 
     Ok(())
 }
 
-pub fn stat(cmount: &mut ceph_mount_info,
-
-            path: &str,
-
-            stbuf: &mut ::std::os::linux::raw::stat)
-            -> Result<(), RadosError> {
+pub fn stat(cmount: &mut ceph_mount_info, path: &str, stbuf: &mut stat) -> Result<(), RadosError> {
     let path = try!(CString::new(path));
     unsafe {
         let ret_code = ceph_stat(cmount, path.as_ptr(), stbuf);
@@ -488,10 +455,7 @@ pub fn stat(cmount: &mut ceph_mount_info,
     Ok(())
 }
 
-pub fn lstat(cmount: &mut ceph_mount_info,
-             path: &str,
-             stbuf: &mut ::std::os::linux::raw::stat)
-             -> Result<(), RadosError> {
+pub fn lstat(cmount: &mut ceph_mount_info, path: &str, stbuf: &mut stat) -> Result<(), RadosError> {
     let path = try!(CString::new(path));
     unsafe {
         let ret_code = ceph_lstat(cmount, path.as_ptr(), stbuf);
@@ -504,11 +468,12 @@ pub fn lstat(cmount: &mut ceph_mount_info,
 
 pub fn setattr(cmount: &mut ceph_mount_info,
                relpath: &str,
-               attr: &mut ::std::os::linux::raw::stat,
+               attr: &mut stat,
                mask: i32)
                -> Result<(), RadosError> {
+    let relpath = try!(CString::new(relpath));
     unsafe {
-        let ret_code = ceph_setattr(cmount, relpath, attr, mask);
+        let ret_code = ceph_setattr(cmount, relpath.as_ptr(), attr, mask);
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
@@ -566,11 +531,8 @@ pub fn fchown(cmount: &mut ceph_mount_info, fd: i32, uid: i32, gid: i32) -> Resu
 }
 
 pub fn lchown(cmount: &mut ceph_mount_info,
-
               path: &str,
-
               uid: i32,
-
               gid: i32)
               -> Result<(), RadosError> {
     let path = try!(CString::new(path));
@@ -584,9 +546,7 @@ pub fn lchown(cmount: &mut ceph_mount_info,
 }
 
 pub fn utime(cmount: &mut ceph_mount_info,
-
              path: &str,
-
              buf: &mut utimbuf)
              -> Result<(), RadosError> {
     let path = try!(CString::new(path));
@@ -600,11 +560,8 @@ pub fn utime(cmount: &mut ceph_mount_info,
 }
 
 pub fn mknod(cmount: &mut ceph_mount_info,
-
              path: &str,
-
              mode: mode_t,
-
              rdev: dev_t)
              -> Result<(), RadosError> {
     let path = try!(CString::new(path));
@@ -618,11 +575,8 @@ pub fn mknod(cmount: &mut ceph_mount_info,
 }
 
 pub fn open(cmount: &mut ceph_mount_info,
-
             path: &str,
-
             flags: i32,
-
             mode: mode_t)
             -> Result<(), RadosError> {
     let path = try!(CString::new(path));
@@ -682,133 +636,140 @@ pub fn fsync(cmount: &mut ceph_mount_info, fd: i32, syncdataonly: i32) -> Result
     Ok(())
 }
 
-pub fn fstat(cmount: &mut ceph_mount_info,
-             fd: i32,
-             stbuf: &mut ::std::os::linux::raw::stat)
-             -> Result<(), RadosError> {
+pub fn fstat(cmount: &mut ceph_mount_info, fd: i32) -> Result<stat, RadosError> {
     unsafe {
-        let ret_code = ceph_fstat(cmount, fd, stbuf);
+        let mut stat_buff: stat = mem::zeroed();
+        let ret_code = ceph_fstat(cmount, fd, &mut stat_buff);
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
+        Ok(stat_buff)
     }
-    Ok(())
 }
 
 pub fn getxattr(cmount: &mut ceph_mount_info,
-
                 path: &str,
-
-                name: &str,
-
-                value: &mut ::std::os::raw::c_void,
-
-                size: usize)
-                -> Result<(), RadosError> {
+                name: &str)
+                -> Result<String, RadosError> {
     let path = try!(CString::new(path));
     let name = try!(CString::new(name));
+    let value_buff: Vec<u8> = Vec::with_capacity(65 * 1024);
     unsafe {
-        let ret_code = ceph_getxattr(cmount, path.as_ptr(), name.as_ptr(), value, size);
+        let ret_code = ceph_getxattr(cmount,
+                                     path.as_ptr(),
+                                     name.as_ptr(),
+                                     value_buff.as_mut_ptr() as *mut c_void,
+                                     value_buff.capacity());
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
+        value_buff.set_len(ret_code as usize);
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&value_buff).into_owned())
 }
 
-pub fn fgetxattr(cmount: &mut ceph_mount_info,
-
-                 fd: i32,
-
-                 name: &str,
-
-                 value: &mut ::std::os::raw::c_void,
-
-                 size: usize)
-                 -> Result<(), RadosError> {
+pub fn fgetxattr(cmount: &mut ceph_mount_info, fd: i32, name: &str) -> Result<String, RadosError> {
     let name = try!(CString::new(name));
+    let mut value_buf: Vec<u8> = Vec::with_capacity(65 * 1024);
     unsafe {
-        let ret_code = ceph_fgetxattr(cmount, fd, name.as_ptr(), value, size);
+        let ret_code = ceph_fgetxattr(cmount,
+                                      fd,
+                                      name.as_ptr(),
+                                      value_buf.as_ptr() as *mut c_void,
+                                      value_buf.capacity());
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
+        value_buf.set_len(ret_code as usize);
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&value_buf).into_owned())
 }
 
 pub fn lgetxattr(cmount: &mut ceph_mount_info,
-
                  path: &str,
-
-                 name: &str,
-
-                 value: &mut ::std::os::raw::c_void,
-
-                 size: usize)
-                 -> Result<(), RadosError> {
+                 name: &str)
+                 -> Result<String, RadosError> {
     let path = try!(CString::new(path));
     let name = try!(CString::new(name));
-    let mut value: ::std::os::raw::c_void = ptr::null_mut();
+    let mut value_buf: Vec<u8> = Vec::with_capacity(65 * 1024);
     unsafe {
-        let ret_code = ceph_lgetxattr(cmount, path.as_ptr(), name.as_ptr(), value, size);
+        let ret_code = ceph_lgetxattr(cmount,
+                                      path.as_ptr(),
+                                      name.as_ptr(),
+                                      value_buf.as_ptr() as *mut c_void,
+                                      value_buf.capacity());
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
+        value_buf.set_len(ret_code as usize);
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&value_buf).into_owned())
 }
 
-pub fn listxattr(cmount: &mut ceph_mount_info,
-
-                 path: &str,
-
-                 list: &mut &str,
-
-                 size: usize)
-                 -> Result<(), RadosError> {
+pub fn listxattr(cmount: &mut ceph_mount_info, path: &str) -> Result<Vec<String>, RadosError> {
     let path = try!(CString::new(path));
+    let mut value_buf: Vec<u8> = Vec::with_capacity(65 * 1024);
     unsafe {
-        let ret_code = ceph_listxattr(cmount, path.as_ptr(), list, size);
+        let ret_code = ceph_listxattr(cmount,
+                                      path.as_ptr(),
+                                      value_buf.as_ptr() as *mut c_char,
+                                      value_buf.capacity());
+        if ret_code < 0 {
+            if ret_code == -ERANGE {
+                // Double the size and try again
+                value_buf = Vec::with_capacity(65 * 2048);
+                let ret_code = ceph_listxattr(cmount,
+                                              path.as_ptr(),
+                                              value_buf.as_ptr() as *mut c_char,
+                                              value_buf.capacity());
+                if ret_code < 0 {
+                    // Give up
+                    return Err(RadosError::new(try!(get_error(ret_code))));
+                }
+                value_buf.set_len(ret_code as usize);
+            }
+            return Err(RadosError::new(try!(get_error(ret_code))));
+        }
+        value_buf.set_len(ret_code as usize);
+    }
+    let xattrs =
+        value_buf.split(|c| c == &0x00).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+    Ok(xattrs)
+}
+
+pub fn flistxattr(cmount: &mut ceph_mount_info, fd: i32) -> Result<Vec<String>, RadosError> {
+    let mut value_buf: Vec<u8> = Vec::with_capacity(65 * 1024);
+    unsafe {
+        let ret_code = ceph_flistxattr(cmount,
+                                       fd,
+                                       value_buf.as_ptr() as *mut c_char,
+                                       value_buf.capacity());
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
+        value_buf.set_len(ret_code as usize);
     }
-    Ok(())
+    let xattrs =
+        value_buf.split(|c| c == &0x00).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+    Ok(xattrs)
 }
 
-pub fn flistxattr(cmount: &mut ceph_mount_info,
-
-                  fd: i32,
-
-                  list: &mut &str,
-
-                  size: usize)
-                  -> Result<(), RadosError> {
-    unsafe {
-        let ret_code = ceph_flistxattr(cmount, fd, list, size);
-        if ret_code < 0 {
-            return Err(RadosError::new(try!(get_error(ret_code))));
-        }
-    }
-    Ok(())
-}
-
-pub fn llistxattr(cmount: &mut ceph_mount_info,
-
-                  path: &str,
-
-                  list: &mut &str,
-
-                  size: usize)
-                  -> Result<(), RadosError> {
+pub fn llistxattr(cmount: &mut ceph_mount_info, path: &str) -> Result<Vec<String>, RadosError> {
     let path = try!(CString::new(path));
+    let value_buf: Vec<u8> = Vec::with_capacity(65 * 1024);
     unsafe {
-        let ret_code = ceph_llistxattr(cmount, path.as_ptr(), list, size);
+        let ret_code = ceph_llistxattr(cmount,
+                                       path.as_ptr(),
+                                       value_buf.as_ptr() as *mut c_char,
+                                       value_buf.capacity());
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
+        value_buf.set_len(ret_code as usize);
     }
-    Ok(())
+    let xattrs =
+        value_buf.split(|c| c == &0x00).map(|s| String::from_utf8_lossy(s).into_owned()).collect();
+    Ok(xattrs)
 }
 
 pub fn removexattr(cmount: &mut ceph_mount_info, path: &str, name: &str) -> Result<(), RadosError> {
@@ -852,22 +813,22 @@ pub fn lremovexattr(cmount: &mut ceph_mount_info,
 }
 
 pub fn setxattr(cmount: &mut ceph_mount_info,
-
                 path: &str,
-
                 name: &str,
-
-                value: *const ::std::os::raw::c_void,
-
+                value: &[u8],
                 size: usize,
-
                 flags: i32)
                 -> Result<(), RadosError> {
 
     let path = try!(CString::new(path));
     let name = try!(CString::new(name));
     unsafe {
-        let ret_code = ceph_setxattr(cmount, path.as_ptr(), name.as_ptr(), value, size, flags);
+        let ret_code = ceph_setxattr(cmount,
+                                     path.as_ptr(),
+                                     name.as_ptr(),
+                                     value.as_ptr() as *const c_void,
+                                     size,
+                                     flags);
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
@@ -1005,20 +966,32 @@ pub fn get_path_pool(cmount: &mut ceph_mount_info, path: &str) -> Result<(), Rad
 }
 
 pub fn get_file_pool_name(cmount: &mut ceph_mount_info,
-
                           fh: i32,
-
                           buf: &mut &str,
-
                           buflen: usize)
-                          -> Result<(), RadosError> {
+                          -> Result<String, RadosError> {
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
     unsafe {
-        let ret_code = ceph_get_file_pool_name(cmount, fh, buf, buflen);
+        // Try to get the name with 1 call.  Otherwise ask for the correct size
+        let ret_code = ceph_get_file_pool_name(cmount, fh, buf.as_ptr() as *mut i8, 1024);
+        if ret_code < -ERANGE {
+            // buf was too small
+            let suggested_size = ceph_get_file_pool_name(cmount, fh, buf.as_ptr() as *mut i8, 0);
+            buf = Vec::with_capacity(suggested_size as usize);
+            let ret_code = ceph_get_file_pool_name(cmount, fh, buf.as_ptr() as *mut i8, 1024);
+            if ret_code < 0 {
+                return Err(RadosError::new(try!(get_error(ret_code))));
+            }
+            // Tell Vec how much we wrote into it
+            buf.set_len(ret_code as usize);
+        }
         if ret_code < 0 {
             return Err(RadosError::new(try!(get_error(ret_code))));
         }
+        // Tell Vec how much we wrote into it
+        buf.set_len(ret_code as usize);
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 pub fn get_path_pool_name(cmount: &mut ceph_mount_info,
@@ -1166,7 +1139,9 @@ pub fn debug_get_fd_caps(cmount: &mut ceph_mount_info, fd: i32) -> Result<(), Ra
     Ok(())
 }
 
-pub fn ll_get_inode(cmount: &mut ceph_mount_info, vino: vinodeno_t) -> Result<Inode, RadosError> {
+pub fn ll_get_inode(cmount: &mut ceph_mount_info,
+                    vino: vinodeno_t)
+                    -> Result<*mut Inode, RadosError> {
     unsafe {
         let inode = ceph_ll_get_inode(cmount, vino);
         Ok(inode)
